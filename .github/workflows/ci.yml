@@ -1,0 +1,123 @@
+name: CI
+
+on:
+  push:
+    branches: [ main, dev, ci/cd ]
+  pull_request:
+    branches: [ main, dev ]
+
+jobs:
+  build-and-test:
+    name: Build & Test (${{ matrix.compiler.name }})
+    runs-on: self-hosted
+
+    strategy:
+      fail-fast: false
+      matrix:
+        compiler:
+          - { name: GCC,   cc: gcc,   cxx: g++ }
+          - { name: Clang, cc: clang, cxx: clang++ }
+
+    env:
+      BUILD_DIR: build-${{ matrix.compiler.cc }}
+      CC: ${{ matrix.compiler.cc }}
+      CXX: ${{ matrix.compiler.cxx }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Toolchain versions
+        run: |
+          cmake --version
+          "$CXX" --version
+
+      - name: Configure
+        run: cmake -S . -B "$BUILD_DIR" -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build
+        run: cmake --build "$BUILD_DIR" --parallel
+
+      - name: Test
+        run: ctest --test-dir "$BUILD_DIR" --output-on-failure
+
+  leak-check:
+    name: Leak check (${{ matrix.compiler.name }})
+    runs-on: self-hosted
+
+    strategy:
+      fail-fast: false
+      matrix:
+        compiler:
+          - { name: GCC,   cc: gcc,   cxx: g++ }
+          - { name: Clang, cc: clang, cxx: clang++ }
+
+    env:
+      BUILD_DIR: build-asan-${{ matrix.compiler.cc }}
+      CC: ${{ matrix.compiler.cc }}
+      CXX: ${{ matrix.compiler.cxx }}
+      SAN_FLAGS: "-fsanitize=address,undefined -fno-omit-frame-pointer -g"
+      ASAN_OPTIONS: "detect_leaks=1:abort_on_error=1"
+      UBSAN_OPTIONS: "halt_on_error=1:print_stacktrace=1"
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure (sanitizers)
+        run: >
+          cmake -S . -B "$BUILD_DIR"
+          -DCMAKE_BUILD_TYPE=Debug
+          -DCMAKE_C_FLAGS="$SAN_FLAGS"
+          -DCMAKE_CXX_FLAGS="$SAN_FLAGS"
+          -DCMAKE_EXE_LINKER_FLAGS="$SAN_FLAGS"
+
+      - name: Build
+        run: cmake --build "$BUILD_DIR" --parallel
+
+      - name: Test under sanitizers
+        run: ctest --test-dir "$BUILD_DIR" --output-on-failure
+
+  coverage:
+    name: Coverage (GCC)
+    runs-on: self-hosted
+
+    env:
+      BUILD_DIR: build-coverage
+      CC: gcc
+      CXX: g++
+      COV_FLAGS: "--coverage -O0 -g"
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure (coverage)
+        run: >
+          cmake -S . -B "$BUILD_DIR"
+          -DCMAKE_BUILD_TYPE=Debug
+          -DCMAKE_C_FLAGS="$COV_FLAGS"
+          -DCMAKE_CXX_FLAGS="$COV_FLAGS"
+          -DCMAKE_EXE_LINKER_FLAGS="--coverage"
+
+      - name: Build
+        run: cmake --build "$BUILD_DIR" --parallel
+
+      - name: Test
+        run: ctest --test-dir "$BUILD_DIR" --output-on-failure
+
+      - name: Generate coverage report
+        run: |
+          lcov --directory "$BUILD_DIR" --capture --output-file coverage.info \
+               --ignore-errors mismatch,gcov
+          lcov --remove coverage.info \
+               '/usr/*' '*/_deps/*' '*/tests/*' \
+               --output-file coverage.info \
+               --ignore-errors unused
+          lcov --list coverage.info
+
+      - name: Upload coverage report
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report
+          path: coverage.info
