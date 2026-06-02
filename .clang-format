@@ -1,0 +1,14 @@
+BasedOnStyle: Google
+ColumnLimit: 80
+IndentWidth: 2
+AllowShortFunctionsOnASingleLine: Empty
+AllowShortIfStatementsOnASingleLine: false
+AllowShortBlocksOnASingleLine: false
+BreakConstructorInitializers: BeforeComma
+PackConstructorInitializers: Never
+BinPackParameters: false
+BinPackArguments: false
+ReferenceAlignment: Left
+PointerAlignment: Left
+AllowAllParametersOfDeclarationOnNextLine: false
+PenaltyBreakBeforeFirstCallParameter: 1
