@@ -1,6 +1,7 @@
 #pragma once
 
 #include <exception>
+#include <limits>
 #include <optional>
 #include <stdexcept>
 
@@ -70,6 +71,32 @@ struct WeightRoundRobinPick : IPickPolicy {
         }
 
         return (*servers_)[index_];
+    }
+};
+
+struct LeastConnectionsPick : IPickPolicy {
+   protected:
+   public:
+    LeastConnectionsPick(std::vector<ServerPtr>* servers)
+        : IPickPolicy(servers) {}
+
+    std::optional<ServerPtr> pickServer() {
+        if (servers_->empty()) {
+            return std::nullopt;
+        }
+
+        size_t index = 0, best = 0;
+        size_t best_value = std::numeric_limits<size_t>::max();
+
+        for (size_t index = 0; index < servers_->size(); index++) {
+            if (size_t current = (*servers_)[index]->getConnects();
+                current < best_value) {
+                best = index;
+                best_value = current;
+            }
+        }
+
+        return (*servers_)[best];
     }
 };
 

@@ -45,6 +45,10 @@ struct Server {
     uint32_t getWeight() const noexcept {
         return weight_;
     }
+
+    uint32_t getConnects() {
+        return cnt_connects_;
+    }
 };
 
 using ServerPtr = std::shared_ptr<Server>;
