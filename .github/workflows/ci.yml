@@ -109,11 +109,12 @@ jobs:
       - name: Generate coverage report
         run: |
           lcov --directory "$BUILD_DIR" --capture --output-file coverage.info \
-               --ignore-errors mismatch,gcov
+               --rc geninfo_unexecuted_blocks=1 \
+               --ignore-errors mismatch,gcov,inconsistent
           lcov --remove coverage.info \
                '/usr/*' '*/_deps/*' '*/tests/*' \
                --output-file coverage.info \
-               --ignore-errors unused
+               --ignore-errors unused,inconsistent
           lcov --list coverage.info
 
       - name: Upload coverage report
