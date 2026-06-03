@@ -47,9 +47,10 @@ jobs:
       - name: Test (gtest JSON)
         run: |
           mkdir -p results
-          ctest --test-dir "$BUILD_DIR" --output-on-failure
           "$BUILD_DIR"/tests/testing \
             --gtest_output=json:results/${{ matrix.config.name }}.json
+          status=$?
+          exit $status
 
       - name: Upload test results
         if: always()
