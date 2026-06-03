@@ -2,6 +2,7 @@
 
 #include <exception>
 #include <limits>
+#include <map>
 #include <optional>
 #include <stdexcept>
 
@@ -13,10 +14,12 @@ struct IPickPolicy {
     std::vector<ServerPtr>* servers_;
 
    public:
-    virtual std::optional<ServerPtr> pickServer() = 0;
+    virtual std::optional<ServerPtr> pickServer(uint32_t id) = 0;
     IPickPolicy(std::vector<ServerPtr>* servers)
         : servers_(servers) {}
 
+    virtual void addServerEvent(ServerPtr server) {}
+    virtual void eraseServerEvent(ServerPtr server) {}
     virtual ~IPickPolicy() {};
 };
 
@@ -29,7 +32,7 @@ struct RoundRobinPick : IPickPolicy {
         : IPickPolicy(servers)
         , index_(0) {}
 
-    std::optional<ServerPtr> pickServer() {
+    std::optional<ServerPtr> pickServer(uint32_t id) {
         if (servers_->empty()) {
             return std::nullopt;
         } else if (index_ >= servers_->size()) {
@@ -52,7 +55,7 @@ struct WeightRoundRobinPick : IPickPolicy {
         , index_(-1)
         , cnt_(0) {}
 
-    std::optional<ServerPtr> pickServer() {
+    std::optional<ServerPtr> pickServer(uint32_t id) {
         if (servers_->empty()) {
             return std::nullopt;
         }
@@ -80,7 +83,7 @@ struct LeastConnectionsPick : IPickPolicy {
     LeastConnectionsPick(std::vector<ServerPtr>* servers)
         : IPickPolicy(servers) {}
 
-    std::optional<ServerPtr> pickServer() {
+    std::optional<ServerPtr> pickServer(uint32_t id) {
         if (servers_->empty()) {
             return std::nullopt;
         }
@@ -97,6 +100,61 @@ struct LeastConnectionsPick : IPickPolicy {
         }
 
         return (*servers_)[best];
+    }
+};
+
+template <uint32_t VnodesPerWeight = 15>
+struct ConsistentHashingPick : IPickPolicy {
+   protected:
+    std::map<uint64_t, ServerPtr> ring_;
+
+    uint64_t vnodeHash(const ServerPtr& server, size_t offset) const {
+        uint64_t h1 = std::hash<uint32_t>{}(server->getId());
+        uint64_t h2 = std::hash<size_t>{}(offset);
+        return (h1 << 32) | (h2 & 0xFFFFFFFF);
+    }
+
+   public:
+    ConsistentHashingPick(std::vector<ServerPtr>* servers)
+        : IPickPolicy(servers) {
+        rebuildRing();
+    }
+
+    void addServerEvent(ServerPtr server) {
+        int weight = server->getWeight();
+        int total_vnodes = weight * VnodesPerWeight;
+        for (int i = 0; i < total_vnodes; ++i) {
+            ring_.emplace(vnodeHash(server, i), server);
+        }
+    }
+
+    void eraseServerEvent(ServerPtr server) {
+        int weight = server->getWeight();
+        int total_vnodes = weight * VnodesPerWeight;
+        for (int i = 0; i < total_vnodes; ++i) {
+            ring_.erase(vnodeHash(server, i));
+        }
+    }
+
+    void rebuildRing() {
+        ring_.clear();
+        if (!servers_ || servers_->empty())
+            return;
+        for (const auto& srv : *servers_) {
+            addServerEvent(srv);
+        }
+    }
+
+    std::optional<ServerPtr> pickServer(uint32_t id) override {
+        if (ring_.empty())
+            return std::nullopt;
+
+        uint64_t hash = std::hash<uint32_t>{}(id);
+        auto it = ring_.lower_bound(hash);
+        if (it == ring_.end()) {
+            it = ring_.begin();
+        }
+        return it->second;
     }
 };
 

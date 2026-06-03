@@ -17,8 +17,8 @@ struct LoadBalancer {
         pick_policy_ = std::make_unique<PickPolicy>(args...);
     }
 
-    ServerPtr pickServer() {
-        auto result = pick_policy_->pickServer();
+    ServerPtr pickServer(uint32_t id) {
+        auto result = pick_policy_->pickServer(id);
         if (result.has_value()) {
             return *result;
         } else {
@@ -26,6 +26,11 @@ struct LoadBalancer {
         }
     }
 
-    
+    void addServerEvent(ServerPtr server) {
+        pick_policy_->addServerEvent(server);
+    }
+    void eraseServerEvent(ServerPtr server) {
+        pick_policy_->eraseServerEvent(server);
+    }
 };
 }  // namespace load_balancer

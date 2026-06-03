@@ -20,6 +20,7 @@ struct ServerManager {
         ServerPtr server = std::make_shared<Server>(weight);
 
         servers_.push_back(server);
+        balancer_->addServerEvent(server);
 
         return server->getId();
     }
@@ -43,6 +44,7 @@ struct ServerManager {
                 servers_.end(),
                 [&id](const ServerPtr& elem) { return elem->getId() == id; });
             it != servers_.end()) {
+            balancer_->eraseServerEvent(*it);
             servers_.erase(it);
             return true;
         }
@@ -59,7 +61,7 @@ struct ServerManager {
     }
 
     Server::Duration runTask(Task task) {
-        ServerPtr server = balancer_->pickServer();
+        ServerPtr server = balancer_->pickServer(task.getId());
         return server->runTask(task);
     }
 };
