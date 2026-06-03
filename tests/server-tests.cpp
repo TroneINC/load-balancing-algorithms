@@ -2,9 +2,13 @@
 
 #include <sys/wait.h>
 
+#include <algorithm>
 #include <chrono>
+#include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#include <thread>
+#include <vector>
 
 #include "server.hpp"
 
@@ -63,4 +67,37 @@ TEST(ServerWeight, ZeroWeightIsRejected) {
         },
         RejectedZeroWeight,
         ".*");
+}
+
+TEST(ServerConcurrency, IdsAreUniqueAcrossThreads) {
+    constexpr int kThreads = 10;
+    constexpr int kPerThread = 1000;
+
+    std::vector<std::vector<uint64_t>> per_thread(kThreads);
+
+    {
+        std::vector<std::jthread> threads;
+        for (int t = 0; t < kThreads; ++t) {
+            threads.emplace_back([&per_thread, t] {
+                auto& ids = per_thread[t];
+                ids.reserve(kPerThread);
+                for (int i = 0; i < kPerThread; ++i) {
+                    Server s(1);
+                    ids.push_back(s.getId());
+                }
+            });
+        }
+    }
+
+    std::vector<uint64_t> ids;
+    ids.reserve(kThreads * kPerThread);
+    for (auto& chunk : per_thread) {
+        ids.insert(ids.end(), chunk.begin(), chunk.end());
+    }
+
+    ASSERT_EQ(ids.size(), static_cast<size_t>(kThreads * kPerThread));
+
+    std::sort(ids.begin(), ids.end());
+    auto dup = std::adjacent_find(ids.begin(), ids.end());
+    EXPECT_EQ(dup, ids.end()) << "duplicate server id: " << *dup;
 }
