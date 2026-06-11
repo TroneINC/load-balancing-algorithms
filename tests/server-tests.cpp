@@ -85,7 +85,7 @@ TEST(ServerSubmit, MultipleTasksAllComplete) {
     EXPECT_EQ(stats.successful_, 20u);
 }
 
-// Более дорогая задача обрабатывается дольше дешёвой.
+// Задача с большей стоимостью обрабатывается строго дольше дешёвой.
 TEST(ServerSubmit, HigherCostTakesLonger) {
     Server s(8, 8.0, 1);
 
@@ -180,7 +180,7 @@ TEST(ServerConnects, ReturnsToZeroAfterRejectedTask) {
     EXPECT_EQ(s.getConnects(), 0u);
 }
 
-// Стресс: при массовом параллельном submit каждый future разрешается ровно
+// Под массовым параллельным submit каждая задача учтена ровно раз: successful_ + failed_ == всего.
 TEST(ServerStress, ConcurrentSubmitsAllComplete) {
     Server s(8, 16.0, 8);
 

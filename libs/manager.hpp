@@ -66,11 +66,11 @@ struct ServerManager {
                     continue;
                 }
                 auto server_opt = balancer_->pickServer(item.task.getId(), servers_);
-                if (!server_opt.has_value()) {
+                if (!server_opt) {
                     item.promise.set_exception(std::make_exception_ptr(NoServerAvailable{}));
                     continue;
                 }
-                server = server_opt.value();
+                server = server_opt;
             }
 
             try {
@@ -92,7 +92,7 @@ struct ServerManager {
         }
 
         for (size_t index = 0; index < num_workers; index++) {
-            workers_.emplace_back(&ServerManager::workerLoop);
+            workers_.emplace_back(&ServerManager::workerLoop, this);
         }
     }
 
@@ -107,13 +107,13 @@ struct ServerManager {
 
             auto server_opt = balancer_->pickServer(task.getId(), servers_);
 
-            if (!server_opt.has_value()) {
+            if (!server_opt) {
                 std::promise<Duration> prom;
                 prom.set_exception(std::make_exception_ptr(NoServerAvailable{}));
                 return prom.get_future();
             }
 
-            return server_opt.value()->submit(task);
+            return server_opt->submit(task);
         } else {
             std::promise<Duration> prom;
             auto fut = prom.get_future();

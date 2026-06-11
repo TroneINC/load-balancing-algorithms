@@ -22,14 +22,14 @@ struct SequenceGenerator : public IGenerator {
    public:
     SequenceGenerator(std::span<double> seq) {
         pos_ = 0;
-        seq_.reserve(seq.size());
+        seq_.resize(seq.size());
         for (size_t index = 0; index < seq.size(); index++) {
             seq_[index] = seq[index];
         }
     }
     double next(std::mt19937&) {
-        if (pos_ > seq_.size()) {
-            pos_ -= seq_.size();
+        if (pos_ >= seq_.size()) {
+            pos_ = 0;
         }
         return seq_[pos_++];
     }

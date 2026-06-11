@@ -9,6 +9,8 @@ using Duration = std::chrono::milliseconds;
 
 class Task {
    public:
+    Task() = default;
+
     Task(uint64_t id, long double cost)
         : id_(id)
         , cost_(cost) {}
@@ -30,8 +32,8 @@ class Task {
     }
 
    private:
-    uint64_t id_;
-    long double cost_;
+    uint64_t id_ = 0;
+    long double cost_ = 0.0L;
 };
 
 struct TaskItem {
