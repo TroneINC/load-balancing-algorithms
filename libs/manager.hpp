@@ -67,12 +67,12 @@ struct ServerManager {
                     prom.set_exception(std::make_exception_ptr(NoPolicy{}));
                     continue;
                 }
-
-                server = balancer_->pickServer(task.getId(), servers_);
-                if (!server) {
-                    prom.set_exception(std::make_exception_ptr(NoServerAvailable{}));
+                auto server_opt = balancer_->pickServer(item.task.getId(), servers_);
+                if (!server_opt) {
+                    item.promise.set_exception(std::make_exception_ptr(NoServerAvailable{}));
                     continue;
                 }
+                server = server_opt;
             }
 
             try {
@@ -109,13 +109,13 @@ struct ServerManager {
 
             auto server = balancer_->pickServer(task.getId(), servers_);
 
-            if (!server) {
+            if (!server_opt) {
                 std::promise<Duration> prom;
                 prom.set_exception(std::make_exception_ptr(NoServerAvailable{}));
                 return prom.get_future();
             }
 
-            return server->submit(task);
+            return server_opt->submit(task);
         } else {
             std::promise<Duration> prom;
             auto fut = prom.get_future();

@@ -295,6 +295,10 @@ class Server {
         return id_;
     }
 
+    uint32_t getWeight() const {
+        return weight_;
+    }
+
     ServerStats getStats() const {
         ServerStats s;
         s.id_ = id_;

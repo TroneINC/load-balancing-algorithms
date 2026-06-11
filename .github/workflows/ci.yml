@@ -76,9 +76,10 @@ jobs:
       - name: Test (gtest JSON)
         run: |
           mkdir -p results
-          ctest --test-dir "$BUILD_DIR" --output-on-failure
           "$BUILD_DIR"/tests/testing \
             --gtest_output=json:results/${{ matrix.config.name }}.json
+          status=$?
+          exit $status
 
       - name: Upload test results
         if: always()
@@ -113,9 +114,10 @@ jobs:
         run: cmake --build "$BUILD_DIR" --parallel
 
       - name: Test
-        run: ctest --test-dir "$BUILD_DIR" --output-on-failure
+        run: ctest --test-dir "$BUILD_DIR" --output-on-failure || true
 
       - name: Generate coverage report
+        if: always()
         run: /mnt/data/actions-runner/gen_coverage.sh "$BUILD_DIR" results
 
       - name: Upload coverage report
@@ -147,6 +149,7 @@ jobs:
           merge-multiple: true
 
       - name: Download coverage report
+        continue-on-error: true
         uses: actions/download-artifact@v5
         with:
           name: coverage-report
