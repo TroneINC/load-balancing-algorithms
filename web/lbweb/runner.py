@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -17,22 +18,24 @@ class BinaryNotFoundError(RuntimeError):
     pass
 
 
+def _binary_patterns() -> tuple[str, ...]:
+    if sys.platform == "win32":
+        return ("*_main.exe", "main.exe", "*_main", "main")
+    return ("*_main", "main")
+
+
+def _is_runnable_binary(path: Path) -> bool:
+    if not path.is_file():
+        return False
+    if sys.platform == "win32":
+        return path.suffix.lower() == ".exe" or path.name == "main" or path.name.endswith("_main")
+    return os.access(path, os.X_OK)
+
+
 def find_binary() -> Path | None:
-    exe_mode = sys.platform == "win32"
-
-    if exe_mode:
-        patterns = ("*_main.exe", "*main.exe")
-    else:
-        patterns = ("*_main", "*main")
-
-
-    for pat in patterns: 
+    for pat in _binary_patterns():
         for p in sorted(BUILD_DIR.rglob(pat)):
-            if not p.is_file():
-                continue
-            if exe_mode:
-                return p
-            if p.stat().st_mode & 0o111:
+            if _is_runnable_binary(p):
                 return p
     return None
 

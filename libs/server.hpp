@@ -6,12 +6,15 @@
 #include <condition_variable>
 #include <cstdint>
 #include <exception>
+#include <functional>
 #include <future>
 #include <memory>
 #include <mutex>
 #include <queue>
 #include <stdexcept>
 #include <thread>
+#include <utility>
+#include <vector>
 
 #include "task.hpp"
 
@@ -26,17 +29,6 @@ struct ServerOverloaded : std::runtime_error {
     ServerOverloaded()
         : std::runtime_error("server overload") {}
 };
-
-// TODO: коэффициенты попросил подобрать нейронку, нужно тестить и менять на свои скорее всего
-// inline constexpr double MIN_LOAD = 0.0;
-// inline constexpr double MAX_LOAD = 1.0;
-// inline constexpr double LOAD_RECOVERY_RATE = 0.25;
-// inline constexpr double MIN_WEIGHT_FACTOR = 0.08;
-// inline constexpr double LOAD_SLOWDOWN_FACTOR = 0.9;
-// inline constexpr double MIN_TASK_SECONDS = 0.001;
-// inline constexpr double TASK_LOAD_FACTOR = 0.35;
-// inline constexpr double CONNECTION_LOAD_FACTOR = 0.04;
-// inline constexpr double MIN_TASK_PRESSURE_WEIGHT = 1.0;
 
 struct ServerModelParams {
     double load_recovery_rate_ = 0.25;
@@ -69,6 +61,7 @@ struct ServerStats {
 class Server {
    public:
     using Clock = std::chrono::steady_clock;
+    using BackgroundLoadSource = std::function<double()>;
 
    private:
     uint64_t id_;
@@ -76,6 +69,7 @@ class Server {
     double capacity_;
     uint32_t max_parallel_requests_;
     ServerModelParams params_;
+    BackgroundLoadSource background_load_source_;
 
     std::queue<TaskItem> queue_;
     std::mutex queue_mutex_;
@@ -86,7 +80,6 @@ class Server {
     std::vector<std::thread> workers_;
 
     std::atomic<uint32_t> cnt_connects_{0};
-    std::atomic<uint64_t> total_request_{0};
     std::atomic<uint64_t> total_time_{0};
     double background_load_value_ = 0.0;
 
@@ -108,15 +101,6 @@ class Server {
     mutable double load_ = 0.0;
     mutable Clock::time_point last_update_;
 
-    // TODO: оценить корректность формулы на практике(собрать стату и валидировать)
-    double decayLoadLocked(Clock::duration elapsed) const {
-        double seconds = std::chrono::duration<double>(elapsed).count();
-
-        double recovery = seconds * static_cast<double>(weight_) * params_.load_recovery_rate_;
-        return std::clamp(load_ - recovery, 0.0, 1.0);
-    }
-
-    // TODO: оценить корректность формулы на практике(собрать стату и валидировать)
     Duration estimateDurationLocked(const Task& task) const {
         double effective_load = load_ + background_load_value_;
         if (effective_load > 1.0)
@@ -131,7 +115,6 @@ class Server {
         return std::chrono::duration_cast<Duration>(dur);
     }
 
-    // TODO: оценить корректность формулы на практике(собрать стату и валидировать)
     double loadAfterTaskStartLocked(const Task& task, uint32_t active_connections) const {
         double task_pressure =
             params_.task_load_factor_ * static_cast<double>(task.getCost()) / std::max(1.0, static_cast<double>(weight_));
@@ -140,7 +123,6 @@ class Server {
         return std::min(1.0, new_load);
     }
 
-    // TODO: оценить корректность формулы на практике(собрать стату и валидировать)
     void refreshLoadLocked(Clock::time_point now) const {
         if (now <= last_update_) {
             return;
@@ -151,9 +133,12 @@ class Server {
         last_update_ = now;
     }
 
-    // TODO: оценить корректность формулы на практике(собрать стату и валидировать)
     void updateBackgroundLoad() {
-        background_load_value_ = 0.0;
+        if (background_load_source_) {
+            background_load_value_ = std::clamp(background_load_source_(), 0.0, 1.0);
+        } else {
+            background_load_value_ = 0.0;
+        }
     }
 
     void workerLoop() {
@@ -169,6 +154,8 @@ class Server {
                     while (!queue_.empty()) {
                         queue_.front().promise.set_exception(std::make_exception_ptr(ServerCrashed{}));
                         queue_.pop();
+                        failed_.fetch_add(1);
+                        cnt_connects_.fetch_sub(1);
                     }
                     return;
                 }
@@ -203,7 +190,6 @@ class Server {
 
             if (reject) {
                 prom.set_exception(std::make_exception_ptr(ServerOverloaded{}));
-                total_request_.fetch_add(1);
                 failed_.fetch_add(1);
                 cnt_connects_.fetch_sub(1);
                 continue;
@@ -214,14 +200,15 @@ class Server {
             auto end = Clock::now();
             auto actual_duration = std::chrono::duration_cast<Duration>(end - start);
 
+            double load_snapshot = 0.0;
             {
                 std::lock_guard<std::mutex> lk(state_mutex_);
                 refreshLoadLocked(end);
+                load_snapshot = load_;
             }
 
             prom.set_value(actual_duration);
 
-            total_requests_.fetch_add(1);
             successful_.fetch_add(1);
             auto ms = static_cast<uint64_t>(actual_duration.count());
             total_time_ms_.fetch_add(ms);
@@ -235,10 +222,10 @@ class Server {
 
             {
                 std::lock_guard<std::mutex> lk(load_stats_mutex_);
-                load_sum_ += load_;
+                load_sum_ += load_snapshot;
                 load_count_++;
-                if (load_ > peak_load_) {
-                    peak_load_ = load_;
+                if (load_snapshot > peak_load_) {
+                    peak_load_ = load_snapshot;
                 }
             }
             cnt_connects_.fetch_sub(1);
@@ -246,12 +233,17 @@ class Server {
     }
 
    public:
-    Server(uint32_t weight, double capacity, uint32_t max_parallel_requests, ServerModelParams params = {})
+    Server(uint32_t weight,
+           double capacity,
+           uint32_t max_parallel_requests,
+           ServerModelParams params = {},
+           BackgroundLoadSource background_load_source = {})
         : id_(next_id_.fetch_add(1, std::memory_order_relaxed))
         , weight_(weight)
         , capacity_(capacity)
         , max_parallel_requests_(max_parallel_requests)
-        , params_(std::move(params)) {
+        , params_(std::move(params))
+        , background_load_source_(std::move(background_load_source)) {
         if (weight_ == 0) {
             throw std::invalid_argument("Server weight must be > 0");
         }
@@ -264,6 +256,7 @@ class Server {
    public:
     std::future<Duration> submit(Task task) {
         cnt_connects_.fetch_add(1);
+        total_requests_.fetch_add(1);
         std::promise<Duration> res;
         auto fut = res.get_future();
 
@@ -271,6 +264,8 @@ class Server {
             std::lock_guard lk(queue_mutex_);
             if (stop_) {
                 res.set_exception(std::make_exception_ptr(ServerCrashed{}));
+                failed_.fetch_add(1);
+                cnt_connects_.fetch_sub(1);
                 return fut;
             }
             queue_.push({std::move(task), std::move(res)});
@@ -283,6 +278,7 @@ class Server {
     void crash() {
         bool current_flag = crashed_.exchange(true);
         if (!current_flag) {
+            crashes_.fetch_add(1);
             {
                 std::lock_guard lk(queue_mutex_);
                 stop_ = true;
@@ -326,9 +322,8 @@ class Server {
         return s;
     }
 
-    // заменить на нормальный
     uint32_t getConnects() const {
-        return static_cast<uint32_t>(total_requests_ - successful_ - failed_);
+        return cnt_connects_.load();
     }
 
     ~Server() {
