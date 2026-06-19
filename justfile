@@ -25,4 +25,4 @@ token :
 # Запуск бенчмарка с пресетом и сохранением результата
 run preset_input output preset="release": build
     @mkdir -p $(dirname {{output}})
-    ./build/{{preset}}_main {{preset_input}} {{output}}
+    ./build/{{preset}}/bin/main {{preset_input}} {{output}}
