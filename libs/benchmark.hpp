@@ -5,6 +5,7 @@
 #include <asio/detached.hpp>
 #include <asio/io_context.hpp>
 #include <asio/steady_timer.hpp>
+#include <atomic>
 #include <chrono>
 #include <cstddef>
 #include <memory>
@@ -66,6 +67,7 @@ class Benchmark {
             all_stats[g].resize(config_.client_groups[g].count);
         }
 
+        auto shared_request_counter = std::make_shared<std::atomic<int>>(0);
         auto test_start = std::chrono::steady_clock::now();
         for (size_t g = 0; g < config_.client_groups.size(); ++g) {
             const auto& group_cfg = config_.client_groups[g];
@@ -79,7 +81,8 @@ class Benchmark {
                                          test_start,
                                          config_.duration_ms,
                                          config_.total_request_limit,
-                                         config_.seed),
+                                         config_.seed,
+                                         shared_request_counter),
                                asio::detached);
             }
         }
@@ -102,6 +105,9 @@ class Benchmark {
                 stats.successful += st.successful;
                 stats.failed += st.failed;
                 stats.retries += st.retries;
+                stats.server_crashed_failures += st.server_crashed_failures;
+                stats.server_overloaded_failures += st.server_overloaded_failures;
+                stats.timeout_failures += st.timeout_failures;
                 stats.latencies.insert(stats.latencies.end(), st.latencies.begin(), st.latencies.end());
             }
         }

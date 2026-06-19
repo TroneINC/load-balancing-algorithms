@@ -103,7 +103,7 @@ function groupRow(g = {}) {
   const row = el("div", "row row--group");
   const head = el("div", "row__head");
   head.innerHTML = `
-    <label>count <input class="g-count" type="number" min="1" value="${g.count ?? 10}"></label>
+    <label>count <input class="g-count" type="number" min="1" value="${g.count ?? 3}"></label>
     <label>sticky_scope
       <select class="g-sticky">${["none", "client", "group"].map((o) =>
         `<option ${o === (g.sticky_scope || "none") ? "selected" : ""}>${o}</option>`).join("")}</select></label>
@@ -111,8 +111,8 @@ function groupRow(g = {}) {
     <button class="rm" title="убрать">✕</button>`;
   head.querySelector(".rm").onclick = () => { row.remove(); refreshPreview(); };
   row.append(head);
-  row.append(genRow("inter_arrival_ms", g.inter_arrival_ms ?? { type: "exponential", center: 20 }));
-  row.append(genRow("task_cost", g.task_cost ?? { type: "constant", value: 50 }));
+  row.append(genRow("inter_arrival_ms", g.inter_arrival_ms ?? { type: "exponential", center: 100 }));
+  row.append(genRow("task_cost", g.task_cost ?? { type: "constant", value: 0.05 }));
   return row;
 }
 
@@ -522,7 +522,7 @@ async function loadExample() {
     servers: [{ weight: 1, capacity: 1, max_parallel_requests: 4 },
       { weight: 2, capacity: 0.8, max_parallel_requests: 4 },
       { weight: 4, capacity: 1, max_parallel_requests: 8, crash_at_ms: 20000 }],
-    client_groups: [{ count: 50, inter_arrival_ms: { type: "exponential", center: 20 }, task_cost: { type: "normal", center: 50, deviation: 15 } }],
+    client_groups: [{ count: 6, inter_arrival_ms: { type: "exponential", center: 80 }, task_cost: { type: "normal", center: 0.08, deviation: 0.02, min: 0.01 } }],
   });
 }
 

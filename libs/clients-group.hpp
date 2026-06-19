@@ -4,10 +4,12 @@
 #include <asio/steady_timer.hpp>
 #include <asio/this_coro.hpp>
 #include <asio/use_awaitable.hpp>
+#include <atomic>
 #include <chrono>
 #include <memory>
 #include <random>
 #include <stdexcept>
+#include <string>
 #include <vector>
 
 #include "benchmark-config.hpp"
@@ -24,6 +26,9 @@ struct ClientStats {
     int successful = 0;
     int failed = 0;
     int retries = 0;
+    int server_crashed_failures = 0;
+    int server_overloaded_failures = 0;
+    int timeout_failures = 0;
     std::vector<double> latencies;
 };
 
@@ -35,7 +40,8 @@ inline asio::awaitable<void> runClient(int group_index,
                                        std::chrono::steady_clock::time_point test_start,
                                        int duration_ms,
                                        int total_request_limit,
-                                       int global_seed) {
+                                       int global_seed,
+                                       std::shared_ptr<std::atomic<int>> shared_request_counter = nullptr) {
     auto executor = co_await asio::this_coro::executor;
     asio::steady_timer timer(executor);
 
@@ -84,6 +90,28 @@ inline asio::awaitable<void> runClient(int group_index,
             co_await timer.async_wait(asio::use_awaitable);
         }
 
+        if (std::chrono::steady_clock::now() >= stop_time) {
+            break;
+        }
+
+        if (total_request_limit > 0) {
+            if (shared_request_counter) {
+                int current = shared_request_counter->load();
+                bool reserved = false;
+                while (current < total_request_limit) {
+                    if (shared_request_counter->compare_exchange_weak(current, current + 1)) {
+                        reserved = true;
+                        break;
+                    }
+                }
+                if (!reserved) {
+                    break;
+                }
+            } else if (requests_sent >= total_request_limit) {
+                break;
+            }
+        }
+
         double cost = cfg.task_cost_gen->next(rng);
 
         uint64_t task_id;
@@ -104,7 +132,7 @@ inline asio::awaitable<void> runClient(int group_index,
         while (retries <= cfg.retry.max_retries) {
             auto fut = manager.submitTask(task);
             try {
-                auto dur = co_await await_future(manager.submitTask(task));
+                auto dur = co_await await_future(std::move(fut));
                 total_latency += dur;
                 success = true;
                 break;
@@ -135,6 +163,13 @@ inline asio::awaitable<void> runClient(int group_index,
             stats.latencies.push_back(static_cast<double>(total_latency.count()));
         } else {
             stats.failed++;
+            if (fail_reason == "server_overloaded") {
+                stats.server_overloaded_failures++;
+            } else if (fail_reason == "timeout") {
+                stats.timeout_failures++;
+            } else {
+                stats.server_crashed_failures++;
+            }
         }
         stats.retries += retries;
 
