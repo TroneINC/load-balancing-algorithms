@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import subprocess
+import sys
 import tempfile
 from pathlib import Path
 from typing import Any
@@ -17,9 +18,21 @@ class BinaryNotFoundError(RuntimeError):
 
 
 def find_binary() -> Path | None:
-    for pat in ("*_main", "*/main"):
-        for p in sorted(BUILD_DIR.glob(pat)):
-            if p.is_file() and p.stat().st_mode & 0o111:
+    exe_mode = sys.platform == "win32"
+
+    if exe_mode:
+        patterns = ("*_main.exe", "*main.exe")
+    else:
+        patterns = ("*_main", "*main")
+
+
+    for pat in patterns: 
+        for p in sorted(BUILD_DIR.rglob(pat)):
+            if not p.is_file():
+                continue
+            if exe_mode:
+                return p
+            if p.stat().st_mode & 0o111:
                 return p
     return None
 
