@@ -214,9 +214,11 @@ class Server {
             auto end = Clock::now();
             auto actual_duration = std::chrono::duration_cast<Duration>(end - start);
 
+            double load_snapshot = 0.0;
             {
                 std::lock_guard<std::mutex> lk(state_mutex_);
                 refreshLoadLocked(end);
+                load_snapshot = load_;
             }
 
             prom.set_value(actual_duration);
@@ -234,10 +236,10 @@ class Server {
 
             {
                 std::lock_guard<std::mutex> lk(load_stats_mutex_);
-                load_sum_ += load_;
+                load_sum_ += load_snapshot;
                 load_count_++;
-                if (load_ > peak_load_) {
-                    peak_load_ = load_;
+                if (load_snapshot > peak_load_) {
+                    peak_load_ = load_snapshot;
                 }
             }
             cnt_connects_.fetch_sub(1);
