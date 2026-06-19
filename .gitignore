@@ -69,3 +69,13 @@ Testing/
 .cache/
 Plan.md
 repomix-output.xml
+
+# Python web (results site)
+web/.venv/
+__pycache__/
+*.pyc
+*.egg-info/
+.ruff_cache/
+.mypy_cache/
+web/data/runs/
+web/data/presets/
