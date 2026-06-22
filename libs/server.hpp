@@ -80,6 +80,7 @@ class Server {
     std::vector<std::thread> workers_;
 
     std::atomic<uint32_t> cnt_connects_{0};
+    std::atomic<uint32_t> active_requests_{0};
     std::atomic<uint64_t> total_time_{0};
     double background_load_value_ = 0.0;
 
@@ -115,10 +116,12 @@ class Server {
         return std::chrono::duration_cast<Duration>(dur);
     }
 
-    double loadAfterTaskStartLocked(const Task& task, uint32_t active_connections) const {
+    double loadAfterTaskStartLocked(const Task& task, uint32_t active_requests) const {
         double task_pressure =
             params_.task_load_factor_ * static_cast<double>(task.getCost()) / std::max(1.0, static_cast<double>(weight_));
-        double connection_pressure = params_.connection_load_factor_ * active_connections;
+        double parallelism = std::max(1.0, static_cast<double>(max_parallel_requests_));
+        double active_ratio = std::min(1.0, static_cast<double>(active_requests) / parallelism);
+        double connection_pressure = params_.connection_load_factor_ * active_ratio;
         double new_load = load_ + task_pressure + connection_pressure;
         return std::min(1.0, new_load);
     }
@@ -184,7 +187,8 @@ class Server {
                 }
 
                 if (!reject) {
-                    load_ = loadAfterTaskStartLocked(task, max_parallel_requests_);
+                    uint32_t active_requests = active_requests_.fetch_add(1, std::memory_order_relaxed) + 1;
+                    load_ = loadAfterTaskStartLocked(task, active_requests);
                 }
             }
 
@@ -199,6 +203,7 @@ class Server {
             std::this_thread::sleep_for(planned);
             auto end = Clock::now();
             auto actual_duration = std::chrono::duration_cast<Duration>(end - start);
+            active_requests_.fetch_sub(1, std::memory_order_relaxed);
 
             double load_snapshot = 0.0;
             {
