@@ -33,22 +33,27 @@ ClientGroupConfig makeGroup() {
     return grp;
 }
 
-ClientStats runOnce(ServerManager& mgr, const ClientGroupConfig& grp, int duration_ms) {
+std::shared_ptr<ServerManager> makeManager() {
+    auto mgr = std::make_shared<ServerManager>(std::make_unique<LoadBalancer>(), 0);
+    mgr->setPickPolicy<RoundRobinPick>();
+    mgr->addServer(1);
+    return mgr;
+}
+
+ClientStats runOnce(std::shared_ptr<ServerManager> mgr, const ClientGroupConfig& grp, int duration_ms) {
     asio::io_context io;
-    ClientStats stats;
+    auto stats = std::make_shared<ClientStats>();
     auto start = std::chrono::steady_clock::now();
     asio::co_spawn(io, runClient(0, 0, grp, mgr, stats, start, duration_ms, 0, 1), asio::detached);
     io.run();
-    return stats;
+    return *stats;
 }
 
 }  // namespace
 
 // За окно работы клиент отправляет хотя бы один запрос.
 TEST(RunClient, SendsRequests) {
-    ServerManager mgr(std::make_unique<LoadBalancer>(), 0);
-    mgr.setPickPolicy<RoundRobinPick>();
-    mgr.addServer(1);
+    auto mgr = makeManager();
 
     auto stats = runOnce(mgr, makeGroup(), 100);
     EXPECT_GT(stats.requests_sent, 0);
@@ -57,9 +62,7 @@ TEST(RunClient, SendsRequests) {
 
 // Успешные запросы добавляют ровно одну латентность каждый.
 TEST(RunClient, SuccessfulRequestsRecordLatency) {
-    ServerManager mgr(std::make_unique<LoadBalancer>(), 0);
-    mgr.setPickPolicy<RoundRobinPick>();
-    mgr.addServer(1);
+    auto mgr = makeManager();
 
     auto stats = runOnce(mgr, makeGroup(), 100);
     EXPECT_EQ(stats.latencies.size(), static_cast<size_t>(stats.successful));
@@ -67,9 +70,7 @@ TEST(RunClient, SuccessfulRequestsRecordLatency) {
 
 // max_requests ограничивает число отправленных запросов.
 TEST(RunClient, RespectsMaxRequests) {
-    ServerManager mgr(std::make_unique<LoadBalancer>(), 0);
-    mgr.setPickPolicy<RoundRobinPick>();
-    mgr.addServer(1);
+    auto mgr = makeManager();
 
     auto grp = makeGroup();
     grp.max_requests = 3;
@@ -79,15 +80,13 @@ TEST(RunClient, RespectsMaxRequests) {
 
 // Один клиентский запрос отправляет на сервер ровно одну задачу.
 TEST(RunClient, SubmitsOneServerTaskPerRequest) {
-    ServerManager mgr(std::make_unique<LoadBalancer>(), 0);
-    mgr.setPickPolicy<RoundRobinPick>();
-    mgr.addServer(1);
+    auto mgr = makeManager();
 
     auto grp = makeGroup();
     grp.max_requests = 1;
     auto stats = runOnce(mgr, grp, 500);
 
     ASSERT_EQ(stats.requests_sent, 1);
-    ASSERT_EQ(mgr.servers().size(), 1u);
-    EXPECT_EQ(mgr.servers()[0]->getStats().requests_received_, 1u);
+    ASSERT_EQ(mgr->servers().size(), 1u);
+    EXPECT_EQ(mgr->servers()[0]->getStats().requests_received_, 1u);
 }
