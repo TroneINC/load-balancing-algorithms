@@ -1,3 +1,6 @@
+set shell := ["sh", "-c"]
+set windows-shell := ["cmd.exe", "/c"]
+
 #Help
 default:
     @just --list --unsorted
@@ -15,7 +18,7 @@ build preset = "release":
     cmake --build --preset {{preset}}
 
 #Запуск тестов
-test preset = "debug": build  
+test preset = "debug": (build preset)
     ctest --preset {{preset}}
 
 #Группируем проект в файл
@@ -24,5 +27,5 @@ token :
 
 # Запуск бенчмарка с пресетом и сохранением результата
 run preset_input output preset="release": build
-    @mkdir -p $(dirname {{output}})
+    cmake -E make_directory {{parent_directory(output)}}
     ./build/{{preset}}/bin/main {{preset_input}} {{output}}

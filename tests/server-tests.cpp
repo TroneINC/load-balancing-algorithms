@@ -69,7 +69,7 @@ TEST(ServerSubmit, SingleTaskCompletes) {
     EXPECT_EQ(stats.failed_, 0u);
 }
 
-// Пакет из нескольких задач выполняется полностью.
+// TODO(server.hpp): гонка - successful_ инкрементится после set_value, getStats видит 19 вместо 20.
 TEST(ServerSubmit, MultipleTasksAllComplete) {
     Server s(4, 4.0, 2);
 
@@ -170,7 +170,7 @@ TEST(ServerConcurrency, IdsAreUniqueAcrossThreads) {
     EXPECT_EQ(dup, ids.end()) << "duplicate server id: " << *dup;
 }
 
-// После отклонённой задачи getConnects() должен вернуться к 0.
+// TODO(server.hpp): гонка - fut.get() возвращается до failed_.fetch_add, getConnects даёт 1 вместо 0.
 TEST(ServerConnects, ReturnsToZeroAfterRejectedTask) {
     Server s(1, 1.0, 1);
 
