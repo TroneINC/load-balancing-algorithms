@@ -56,9 +56,9 @@ inline asio::awaitable<void> runClient(int group_index,
 
     uint64_t base_id = 0;
     if (cfg.sticky_scope == Client) {
-        base_id = static_cast<uint64_t>(group_index) * 10000 + client_index;
+        base_id = static_cast<uint64_t>(group_index) * 1000000ULL + client_index;
     } else if (cfg.sticky_scope == Group) {
-        base_id = static_cast<uint64_t>(group_index) * 10000;
+        base_id = static_cast<uint64_t>(group_index) * 1000000ULL;
     }
 
     int request_counter = 0;
@@ -116,7 +116,8 @@ inline asio::awaitable<void> runClient(int group_index,
 
         uint64_t task_id;
         if (cfg.sticky_scope == None) {
-            task_id = static_cast<uint64_t>(group_index) * 1000000 + request_counter;
+            task_id =
+                static_cast<uint64_t>(group_index) * 1000000000ULL + static_cast<uint64_t>(client_index) * 1000000ULL + request_counter;
         } else {
             task_id = base_id;
         }
