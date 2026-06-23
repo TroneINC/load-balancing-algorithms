@@ -1,3 +1,5 @@
+set shell := ["cmd.exe", "/c"]
+
 #Help
 default:
     @just --list --unsorted
