@@ -1,4 +1,5 @@
-set shell := ["cmd.exe", "/c"]
+set shell := ["sh", "-c"]
+set windows-shell := ["cmd.exe", "/c"]
 
 #Help
 default:
@@ -26,5 +27,5 @@ token :
 
 # Запуск бенчмарка с пресетом и сохранением результата
 run preset_input output preset="release": build
-    @mkdir -p $(dirname {{output}})
+    cmake -E make_directory {{parent_directory(output)}}
     ./build/{{preset}}/bin/main {{preset_input}} {{output}}
