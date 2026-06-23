@@ -46,6 +46,8 @@ if(NOT TARGET asio)
     target_compile_definitions(asio INTERFACE ASIO_STANDALONE)
 endif()
 
+include(CTest)
+
 if(BUILD_TESTING)
     set(JSON_VALIDATOR_INSTALL OFF CACHE BOOL "" FORCE)
     set(JSON_VALIDATOR_BUILD_TESTS OFF CACHE BOOL "" FORCE)
@@ -62,8 +64,6 @@ endif()
 
 add_subdirectory(libs)
 add_subdirectory(bin)
-
-include(CTest)
 
 if(BUILD_TESTING)
     add_subdirectory(tests)
