@@ -4,8 +4,8 @@
 #include <memory>
 #include <vector>
 
-#include "benchmark.hpp"
 #include "benchmark-config.hpp"
+#include "benchmark.hpp"
 #include "generators.hpp"
 #include "pick-policy.hpp"
 
@@ -33,11 +33,11 @@ BenchmarkConfig tinyConfig() {
 
     ClientGroupConfig grp;
     grp.count = 1;
-    double inter[1]{5.0};
-    double cost[1]{0.1};
+    std::vector<double> inter{5.0};
+    std::vector<double> cost{0.1};
     grp.inter_arrival_gen = std::make_shared<SequenceGenerator>(inter);
     grp.task_cost_gen = std::make_shared<SequenceGenerator>(cost);
-    double delay[1]{0.0};
+    std::vector<double> delay{0.0};
     grp.retry.delay_gen = std::make_shared<SequenceGenerator>(delay);
     cfg.client_groups.push_back(std::move(grp));
     return cfg;
@@ -71,4 +71,19 @@ TEST(Benchmark, ThroughputComputedWhenSuccessful) {
         EXPECT_GT(stats.throughput_rps, 0.0);
         EXPECT_EQ(stats.latencies.size(), static_cast<size_t>(stats.successful));
     }
+}
+
+// Глобальный total_request_limit ограничивает суммарные запросы всех клиентов.
+TEST(Benchmark, RespectsTotalRequestLimit) {
+    auto cfg = tinyConfig();
+    cfg.duration_ms = 1000;
+    cfg.total_request_limit = 3;
+    cfg.client_groups[0].count = 4;
+
+    asio::io_context io;
+    Benchmark bench(io, cfg);
+    auto stats = bench.run();
+
+    EXPECT_LE(stats.total_requests, 3);
+    EXPECT_EQ(stats.total_requests, stats.successful + stats.failed);
 }

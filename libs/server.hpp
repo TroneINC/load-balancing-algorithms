@@ -76,11 +76,12 @@ class Server {
     std::condition_variable cv_;
     bool stop_ = false;
     std::atomic<bool> crashed_{false};
+    std::atomic<bool> started_{false};
 
     std::vector<std::thread> workers_;
 
     std::atomic<uint32_t> cnt_connects_{0};
-    std::atomic<uint64_t> total_time_{0};
+    std::atomic<uint32_t> active_requests_{0};
     double background_load_value_ = 0.0;
 
     std::atomic<uint64_t> total_requests_{0};
@@ -108,25 +109,23 @@ class Server {
         double available_factor = std::max(params_.min_weight_factor_, 1.0 - effective_load * params_.load_slowdown_factor_);
         double effective_power = static_cast<double>(weight_) * capacity_ * available_factor;
         double seconds = static_cast<double>(task.getCost()) / std::max(1e-9, effective_power);
-        if (seconds < params_.min_task_seconds_) {
+        if (seconds < params_.min_task_seconds_)
             seconds = params_.min_task_seconds_;
-        }
-        auto dur = std::chrono::duration<double>(seconds);
-        return std::chrono::duration_cast<Duration>(dur);
+        return std::chrono::duration_cast<Duration>(std::chrono::duration<double>(seconds));
     }
 
-    double loadAfterTaskStartLocked(const Task& task, uint32_t active_connections) const {
+    double loadAfterTaskStartLocked(const Task& task, uint32_t active_requests) const {
         double task_pressure =
             params_.task_load_factor_ * static_cast<double>(task.getCost()) / std::max(1.0, static_cast<double>(weight_));
-        double connection_pressure = params_.connection_load_factor_ * active_connections;
-        double new_load = load_ + task_pressure + connection_pressure;
-        return std::min(1.0, new_load);
+        double parallelism = std::max(1.0, static_cast<double>(max_parallel_requests_));
+        double active_ratio = std::min(1.0, static_cast<double>(active_requests) / parallelism);
+        double connection_pressure = params_.connection_load_factor_ * active_ratio;
+        return std::min(1.0, load_ + task_pressure + connection_pressure);
     }
 
     void refreshLoadLocked(Clock::time_point now) const {
-        if (now <= last_update_) {
+        if (now <= last_update_)
             return;
-        }
         auto elapsed = std::chrono::duration<double>(now - last_update_).count();
         double recovery = elapsed * static_cast<double>(weight_) * params_.load_recovery_rate_;
         load_ = std::max(0.0, load_ - recovery);
@@ -147,15 +146,19 @@ class Server {
             std::promise<Duration> prom;
             {
                 std::unique_lock<std::mutex> lk(queue_mutex_);
-
                 cv_.wait(lk, [this]() { return stop_ || !queue_.empty(); });
 
                 if (stop_) {
+                    std::vector<std::promise<Duration>> promises;
                     while (!queue_.empty()) {
-                        queue_.front().promise.set_exception(std::make_exception_ptr(ServerCrashed{}));
+                        promises.push_back(std::move(queue_.front().promise));
                         queue_.pop();
                         failed_.fetch_add(1);
                         cnt_connects_.fetch_sub(1);
+                    }
+                    lk.unlock(); 
+                    for (auto& p : promises) {
+                        p.set_exception(std::make_exception_ptr(ServerCrashed{}));
                     }
                     return;
                 }
@@ -169,29 +172,27 @@ class Server {
             {
                 std::lock_guard lk(state_mutex_);
                 updateBackgroundLoad();
-
                 refreshLoadLocked(Clock::now());
                 planned = estimateDurationLocked(task);
 
                 if (params_.reject_threshold_seconds_ > 0.0) {
                     double threshold_ms = params_.reject_threshold_seconds_ * 1000.0 * (1.0 - load_ * params_.overload_reject_factor_);
-                    if (threshold_ms < 0.0) {
+                    if (threshold_ms < 0.0)
                         threshold_ms = 0.0;
-                    }
-                    if (planned.count() > threshold_ms) {
+                    if (planned.count() > threshold_ms)
                         reject = true;
-                    }
                 }
 
                 if (!reject) {
-                    load_ = loadAfterTaskStartLocked(task, max_parallel_requests_);
+                    uint32_t active_requests = active_requests_.fetch_add(1, std::memory_order_relaxed) + 1;
+                    load_ = loadAfterTaskStartLocked(task, active_requests);
                 }
             }
 
             if (reject) {
-                prom.set_exception(std::make_exception_ptr(ServerOverloaded{}));
                 failed_.fetch_add(1);
                 cnt_connects_.fetch_sub(1);
+                prom.set_exception(std::make_exception_ptr(ServerOverloaded{}));
                 continue;
             }
 
@@ -199,6 +200,7 @@ class Server {
             std::this_thread::sleep_for(planned);
             auto end = Clock::now();
             auto actual_duration = std::chrono::duration_cast<Duration>(end - start);
+            active_requests_.fetch_sub(1, std::memory_order_relaxed);
 
             double load_snapshot = 0.0;
             {
@@ -206,8 +208,6 @@ class Server {
                 refreshLoadLocked(end);
                 load_snapshot = load_;
             }
-
-            prom.set_value(actual_duration);
 
             successful_.fetch_add(1);
             auto ms = static_cast<uint64_t>(actual_duration.count());
@@ -224,11 +224,13 @@ class Server {
                 std::lock_guard<std::mutex> lk(load_stats_mutex_);
                 load_sum_ += load_snapshot;
                 load_count_++;
-                if (load_snapshot > peak_load_) {
+                if (load_snapshot > peak_load_)
                     peak_load_ = load_snapshot;
-                }
             }
+
             cnt_connects_.fetch_sub(1);
+
+            prom.set_value(actual_duration);
         }
     }
 
@@ -244,40 +246,53 @@ class Server {
         , max_parallel_requests_(max_parallel_requests)
         , params_(std::move(params))
         , background_load_source_(std::move(background_load_source)) {
-        if (weight_ == 0) {
+        if (weight_ == 0)
             throw std::invalid_argument("Server weight must be > 0");
-        }
         last_update_ = Clock::now();
         for (uint32_t i = 0; i < max_parallel_requests_; ++i) {
             workers_.emplace_back(&Server::workerLoop, this);
         }
     }
 
-   public:
     std::future<Duration> submit(Task task) {
         cnt_connects_.fetch_add(1);
         total_requests_.fetch_add(1);
         std::promise<Duration> res;
         auto fut = res.get_future();
 
+        bool stopped = false;
         {
             std::lock_guard lk(queue_mutex_);
             if (stop_) {
-                res.set_exception(std::make_exception_ptr(ServerCrashed{}));
-                failed_.fetch_add(1);
-                cnt_connects_.fetch_sub(1);
-                return fut;
+                stopped = true;
+            } else {
+                TaskItem item{std::move(task), std::move(res)};
+                queue_.push(std::move(item));
             }
-            queue_.push({std::move(task), std::move(res)});
         }
 
-        cv_.notify_one();
+        if (stopped) {
+            failed_.fetch_add(1);
+            cnt_connects_.fetch_sub(1);
+            res.set_exception(std::make_exception_ptr(ServerCrashed{}));
+        } else {
+            cv_.notify_one();
+        }
         return fut;
     }
 
+    void markStarted() {
+        started_.store(true);
+    }
+    bool isStarted() const {
+        return started_.load();
+    }
+    bool isCrashed() const {
+        return crashed_.load();
+    }
+
     void crash() {
-        bool current_flag = crashed_.exchange(true);
-        if (!current_flag) {
+        if (!crashed_.exchange(true)) {
             crashes_.fetch_add(1);
             {
                 std::lock_guard lk(queue_mutex_);
@@ -290,9 +305,17 @@ class Server {
     uint64_t getId() const {
         return id_;
     }
-
     uint32_t getWeight() const {
         return weight_;
+    }
+    uint32_t getConnects() const {
+        return cnt_connects_.load();
+    }
+
+    double getCurrentLoad() const {
+        std::lock_guard lk(state_mutex_);
+        refreshLoadLocked(Clock::now());
+        return load_;
     }
 
     ServerStats getStats() const {
@@ -305,25 +328,25 @@ class Server {
         s.successful_ = successful_.load();
         s.failed_ = failed_.load();
         s.total_time_processing_ms_ = static_cast<double>(total_time_ms_.load());
+
         uint64_t succ = successful_.load();
         if (succ > 0) {
             s.avg_time_ms_ = static_cast<double>(total_time_ms_.load()) / succ;
             s.min_time_ms_ = static_cast<double>(min_time_ms_.load());
             s.max_time_ms_ = static_cast<double>(max_time_ms_.load());
+        } else {
+            s.min_time_ms_ = 0.0;
+            s.max_time_ms_ = 0.0;
         }
+
         {
             std::lock_guard<std::mutex> lk(load_stats_mutex_);
-            if (load_count_ > 0) {
+            if (load_count_ > 0)
                 s.avg_load_ = load_sum_ / load_count_;
-            }
             s.peak_load_ = peak_load_;
         }
         s.crashes_ = crashes_.load();
         return s;
-    }
-
-    uint32_t getConnects() const {
-        return cnt_connects_.load();
     }
 
     ~Server() {

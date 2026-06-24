@@ -4,10 +4,13 @@
 #include <asio/steady_timer.hpp>
 #include <asio/this_coro.hpp>
 #include <asio/use_awaitable.hpp>
+#include <atomic>
 #include <chrono>
 #include <memory>
+#include <mutex>
 #include <random>
 #include <stdexcept>
+#include <string>
 #include <vector>
 
 #include "benchmark-config.hpp"
@@ -24,18 +27,25 @@ struct ClientStats {
     int successful = 0;
     int failed = 0;
     int retries = 0;
+    int server_crashed_failures = 0;
+    int server_overloaded_failures = 0;
+    int timeout_failures = 0;
+    int unknown_failures = 0;
     std::vector<double> latencies;
 };
 
 inline asio::awaitable<void> runClient(int group_index,
                                        int client_index,
-                                       const ClientGroupConfig& cfg,
-                                       ServerManager& manager,
-                                       ClientStats& stats,
+                                       ClientGroupConfig cfg,
+                                       std::shared_ptr<ServerManager> manager,
+                                       std::shared_ptr<ClientStats> stats,
                                        std::chrono::steady_clock::time_point test_start,
                                        int duration_ms,
                                        int total_request_limit,
-                                       int global_seed) {
+                                       int global_seed,
+                                       std::shared_ptr<std::atomic<int>> shared_request_counter = nullptr,
+                                       std::shared_ptr<std::mutex> timeline_mtx = nullptr,
+                                       std::shared_ptr<std::vector<double>> timeline_latencies = nullptr) {
     auto executor = co_await asio::this_coro::executor;
     asio::steady_timer timer(executor);
 
@@ -46,21 +56,19 @@ inline asio::awaitable<void> runClient(int group_index,
 
     uint64_t base_id = 0;
     if (cfg.sticky_scope == Client) {
-        base_id = static_cast<uint64_t>(group_index) * 10000 + client_index;
+        base_id = static_cast<uint64_t>(group_index) * 1000000ULL + client_index;
     } else if (cfg.sticky_scope == Group) {
-        base_id = static_cast<uint64_t>(group_index) * 10000;
+        base_id = static_cast<uint64_t>(group_index) * 1000000ULL;
     }
 
     int request_counter = 0;
 
     while (true) {
         auto now = std::chrono::steady_clock::now();
-        if (now >= stop_time) {
+        if (now >= stop_time)
             break;
-        }
-        if (cfg.max_requests > 0 && requests_sent >= cfg.max_requests) {
+        if (cfg.max_requests > 0 && requests_sent >= cfg.max_requests)
             break;
-        }
 
         if (!cfg.active_windows.empty()) {
             auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now - test_start).count();
@@ -84,11 +92,32 @@ inline asio::awaitable<void> runClient(int group_index,
             co_await timer.async_wait(asio::use_awaitable);
         }
 
+        if (std::chrono::steady_clock::now() >= stop_time)
+            break;
+
+        if (total_request_limit > 0) {
+            if (shared_request_counter) {
+                int current = shared_request_counter->load();
+                bool reserved = false;
+                while (current < total_request_limit) {
+                    if (shared_request_counter->compare_exchange_weak(current, current + 1)) {
+                        reserved = true;
+                        break;
+                    }
+                }
+                if (!reserved)
+                    break;
+            } else if (requests_sent >= total_request_limit) {
+                break;
+            }
+        }
+
         double cost = cfg.task_cost_gen->next(rng);
 
         uint64_t task_id;
         if (cfg.sticky_scope == None) {
-            task_id = static_cast<uint64_t>(group_index) * 1000000 + request_counter;
+            task_id =
+                static_cast<uint64_t>(group_index) * 1000000000ULL + static_cast<uint64_t>(client_index) * 1000000ULL + request_counter;
         } else {
             task_id = base_id;
         }
@@ -101,10 +130,22 @@ inline asio::awaitable<void> runClient(int group_index,
 
         auto request_deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(cfg.retry.timeout_ms);
 
-        while (retries <= cfg.retry.max_retries) {
-            auto fut = manager.submitTask(task);
+        for (int attempt = 0; attempt <= cfg.retry.max_retries; ++attempt) {
+            if (attempt > 0)
+                ++retries;
+            auto fut = manager->submitTask(task);
             try {
-                auto dur = co_await await_future(manager.submitTask(task));
+                Duration dur;
+                if (cfg.retry.timeout_ms > 0) {
+                    auto maybe_duration = co_await await_future_until(std::move(fut), request_deadline);
+                    if (!maybe_duration) {
+                        fail_reason = "timeout";
+                        break;
+                    }
+                    dur = *maybe_duration;
+                } else {
+                    dur = co_await await_future(std::move(fut));
+                }
                 total_latency += dur;
                 success = true;
                 break;
@@ -112,31 +153,61 @@ inline asio::awaitable<void> runClient(int group_index,
                 fail_reason = "server_overloaded";
             } catch (const ServerCrashed&) {
                 fail_reason = "server_crashed";
+            } catch (const NoServerAvailable&) {
+                fail_reason = "unknown";
+            } catch (const NoPolicy&) {
+                fail_reason = "unknown";
             } catch (...) {
-                // Неизвестные исключения не ожидаются, но чтобы не падать, считаем крахом сервера
-                fail_reason = "server_crashed";
+                fail_reason = "unknown";
                 break;
             }
-            ++retries;
-            if (retries <= cfg.retry.max_retries) {
-                double delay = cfg.retry.delay_gen->next(rng);
-                timer.expires_after(std::chrono::milliseconds(static_cast<int>(delay)));
-                co_await timer.async_wait(asio::use_awaitable);
-                if (cfg.retry.timeout_ms > 0 && std::chrono::steady_clock::now() > request_deadline) {
-                    fail_reason = "timeout";
-                    break;
+            if (attempt == cfg.retry.max_retries)
+                break;
+            if (cfg.retry.timeout_ms > 0 && std::chrono::steady_clock::now() >= request_deadline) {
+                fail_reason = "timeout";
+                break;
+            }
+
+            double delay = cfg.retry.delay_gen->next(rng);
+            if (delay > 0.0) {
+                auto retry_delay = std::chrono::milliseconds(static_cast<int>(delay));
+                if (cfg.retry.timeout_ms > 0) {
+                    auto now_timer = std::chrono::steady_clock::now();
+                    if (now_timer + retry_delay >= request_deadline) {
+                        timer.expires_at(request_deadline);
+                        co_await timer.async_wait(asio::use_awaitable);
+                        fail_reason = "timeout";
+                        break;
+                    }
                 }
+                timer.expires_after(retry_delay);
+                co_await timer.async_wait(asio::use_awaitable);
             }
         }
 
-        stats.requests_sent++;
+        stats->requests_sent++;
         if (success) {
-            stats.successful++;
-            stats.latencies.push_back(static_cast<double>(total_latency.count()));
+            stats->successful++;
+            double lat_val = static_cast<double>(total_latency.count());
+            stats->latencies.push_back(lat_val);
+
+            if (timeline_mtx && timeline_latencies) {
+                std::lock_guard<std::mutex> lk(*timeline_mtx);
+                timeline_latencies->push_back(lat_val);
+            }
         } else {
-            stats.failed++;
+            stats->failed++;
+            if (fail_reason == "server_overloaded") {
+                stats->server_overloaded_failures++;
+            } else if (fail_reason == "timeout") {
+                stats->timeout_failures++;
+            } else if (fail_reason == "unknown") {
+                stats->unknown_failures++;
+            } else {
+                stats->server_crashed_failures++;
+            }
         }
-        stats.retries += retries;
+        stats->retries += retries;
 
         ++requests_sent;
         ++request_counter;
