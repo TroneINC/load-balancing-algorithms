@@ -77,6 +77,7 @@ function serverRow(s = {}) {
     <label>start_at_ms <input class="s-start" type="number" min="0" value="${s.start_at_ms ?? 0}"></label>
     <label>crash_at_ms <input class="s-crash" type="number" min="0" placeholder="∞" value="${s.crash_at_ms ?? ""}"></label>
     <button class="rm" title="убрать">✕</button>`;
+  row.append(genRow("background_load", s.background_load ?? { type: "constant", value: 0 }));
   row.querySelector(".rm").onclick = () => { row.remove(); refreshPreview(); };
   return row;
 }
@@ -87,6 +88,7 @@ function readServers() {
     const s = {
       weight: Number(r.querySelector(".s-weight").value),
       capacity: Number(r.querySelector(".s-capacity").value),
+      background_load: readGen(r.querySelector(".gen")),
       max_parallel_requests: Number(r.querySelector(".s-parallel").value),
       start_at_ms: Number(r.querySelector(".s-start").value),
     };
